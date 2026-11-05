@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Robot Camera</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #111; color: #eee; font-family: system-ui, sans-serif;
+           display: flex; flex-direction: column; align-items: center;
+           justify-content: center; min-height: 100vh; gap: 16px; }
+    video { width: 480px; max-width: 100%; border-radius: 12px;
+            background: #222; aspect-ratio: 16/9; object-fit: cover; }
+    #status { font-size: 14px; color: #aaa; }
+    #status span { font-weight: 600; }
+    button { padding: 10px 28px; border-radius: 8px; border: none;
+             background: #0a84ff; color: white; font-size: 15px;
+             font-weight: 600; cursor: pointer; }
+    button:disabled { background: #444; cursor: default; }
+  </style>
+</head>
+<body>
+  <video id="localVideo" autoplay muted playsinline></video>
+  <p id="status">Status: <span id="statusText">Idle</span></p>
+  <button id="startBtn">Start Camera &amp; Connect</button>
+
+  <script>
+    const SERVER_URL = 'ws://localhost:8080';
+
+    const videoEl    = document.getElementById('localVideo');
+    const statusText = document.getElementById('statusText');
+    const startBtn   = document.getElementById('startBtn');
+
+    const ICE_SERVERS = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ];
+
+    let ws, pc, localStream;
+
+    function setStatus(msg) {
+      statusText.textContent = msg;
+      console.log('[status]', msg);
+    }
+
+    // ── WebSocket ────────────────────────────────────────────────
+
+    function connectSignaling() {
+      ws = new WebSocket(SERVER_URL);
+
+      ws.onopen = () => {
+        setStatus('Signaling connected — waiting for iOS peer…');
+        // A new peer (the iPhone) may already be connected. Send the offer
+        // immediately so it doesn't have to wait.
+        sendOffer();
+      };
+
+      ws.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+        console.log('[ws ←]', msg.type);
+
+        if (msg.type === 'SessionDescription' && msg.payload.type === 'answer') {
+          // iOS sent back its SDP answer — apply it as the remote description.
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+          setStatus('SDP answer received — ICE connecting…');
+
+        } else if (msg.type === 'IceCandidate') {
+          // iOS sent an ICE candidate — add it to our peer connection.
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate({
+              sdpMid:        msg.payload.sdpMid,
+              sdpMLineIndex: msg.payload.sdpMLineIndex,
+              candidate:     msg.payload.sdp,
+            }));
+          } catch (e) {
+            console.warn('addIceCandidate error:', e);
+          }
+        }
+      };
+
+      ws.onclose = () => {
+        setStatus('Signaling disconnected — retrying in 2s…');
+        setTimeout(connectSignaling, 2000);
+      };
+
+      ws.onerror = (e) => console.error('[ws error]', e);
+    }
+
+    function send(type, payload) {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const msg = JSON.stringify({ type, payload });
+      console.log('[ws →]', type);
+      ws.send(msg);
+    }
+
+    // ── WebRTC ───────────────────────────────────────────────────
+
+    function createPeerConnection() {
+      pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+      // Forward local ICE candidates to the iOS peer via signaling server.
+      pc.onicecandidate = ({ candidate }) => {
+        if (!candidate) return;
+        send('IceCandidate', {
+          sdp:           candidate.candidate,
+          sdpMid:        candidate.sdpMid,
+          sdpMLineIndex: candidate.sdpMLineIndex,
+        });
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        setStatus('ICE: ' + pc.iceConnectionState);
+      };
+
+      // Add all local camera tracks to the peer connection.
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+
+    async function sendOffer() {
+      createPeerConnection();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      send('SessionDescription', { type: offer.type, sdp: offer.sdp });
+      setStatus('SDP offer sent — waiting for answer…');
+    }
+
+    // ── Start ────────────────────────────────────────────────────
+
+    startBtn.addEventListener('click', async () => {
+      startBtn.disabled = true;
+      setStatus('Requesting camera…');
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        videoEl.srcObject = localStream;
+        setStatus('Camera ready');
+        connectSignaling();
+      } catch (e) {
+        setStatus('Camera error: ' + e.message);
+        startBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
