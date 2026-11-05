@@ -22,7 +22,10 @@
 <body>
   <video id="localVideo" autoplay muted playsinline></video>
   <p id="status">Status: <span id="statusText">Idle</span></p>
-  <button id="startBtn">Start Camera &amp; Connect</button>
+  <div style="display:flex;gap:10px;">
+    <button id="startBtn">Start Camera &amp; Connect</button>
+    <button id="offerBtn" disabled>Resend Offer</button>
+  </div>
 
   <script>
     const SERVER_URL = 'ws://localhost:8080';
@@ -30,6 +33,7 @@
     const videoEl    = document.getElementById('localVideo');
     const statusText = document.getElementById('statusText');
     const startBtn   = document.getElementById('startBtn');
+    const offerBtn   = document.getElementById('offerBtn');
 
     const ICE_SERVERS = [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -50,13 +54,18 @@
 
       ws.onopen = () => {
         setStatus('Signaling connected — waiting for iOS peer…');
-        // A new peer (the iPhone) may already be connected. Send the offer
-        // immediately so it doesn't have to wait.
-        sendOffer();
+        offerBtn.disabled = false;
+        // Don't auto-send offer here — iOS may not be connected yet.
+        // Click "Resend Offer" once iOS shows "Connected".
       };
 
       ws.onmessage = async (event) => {
-        const msg = JSON.parse(event.data);
+        // iOS sends binary WebSocket frames (URLSessionWebSocketTask.send(.data)).
+        // Convert Blob → text before parsing; string frames pass through directly.
+        const text = (event.data instanceof Blob)
+          ? await event.data.text()
+          : event.data;
+        const msg = JSON.parse(text);
         console.log('[ws ←]', msg.type);
 
         if (msg.type === 'SessionDescription' && msg.payload.type === 'answer') {
@@ -132,12 +141,18 @@
       try {
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         videoEl.srcObject = localStream;
-        setStatus('Camera ready');
+        setStatus('Camera ready — connect iOS app, then click Resend Offer');
         connectSignaling();
       } catch (e) {
         setStatus('Camera error: ' + e.message);
         startBtn.disabled = false;
       }
+    });
+
+    offerBtn.addEventListener('click', () => {
+      // Recreate the peer connection so we start from a clean slate.
+      if (pc) pc.close();
+      sendOffer();
     });
   </script>
 </body>

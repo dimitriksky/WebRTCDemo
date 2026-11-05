@@ -60,9 +60,12 @@ final class WebSocketClient: NSObject {
             case .success(.data(let data)):
                 self.continuation?.yield(.message(data))
                 self.receiveNext()
-            case .success(.string):
-                // The Node.js server sends binary frames; strings are unexpected.
-                // Skip and keep listening rather than failing hard.
+            case .success(.string(let string)):
+                // The browser sends text WebSocket frames; convert to Data so the
+                // same message pipeline handles both binary and text sources.
+                if let data = string.data(using: .utf8) {
+                    self.continuation?.yield(.message(data))
+                }
                 self.receiveNext()
             case .failure:
                 self.continuation?.yield(.disconnected)
